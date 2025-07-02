@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: optimized-web-app
+  labels:
+    app: optimized-web-app
+spec:
+  replicas: 3  # Начальное количество с учетом возможного масштабирования
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: optimized-web-app
+  template:
+    metadata:
+      labels:
+        app: optimized-web-app
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: optimized-web-app
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+      containers:
+      - name: app-container
+        image: custom-app-image:v1.2.3
+        ports:
+        - containerPort: 8080
+        livenessProbe:
+          httpGet:
+            path: /status
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 20  # Учитываем длительную инициализацию
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "150Mi"  # Небольшой запас сверх 128M
+            cpu: "50m"  # Базовый уровень
+          limits:
+            memory: "200Mi"
+            cpu: "500m"  # Для обработки начальных всплесков
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app-scaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: optimized-web-app
+  minReplicas: 2  # Минимум для отказоустойчивости
+  maxReplicas: 5  # С запасом от тестовых 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # Длинное окно для ночного снижения
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 180
+    scaleUp:
+      stabilizationWindowSeconds: 90
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+spec:
+  selector:
+    app: optimized-web-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer
